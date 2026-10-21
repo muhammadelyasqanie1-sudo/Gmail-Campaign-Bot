@@ -68,6 +68,11 @@ def init_db():
                 count INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (telegram_id, usage_date)
             );
+            CREATE TABLE IF NOT EXISTS wa_permissions (
+                telegram_id INTEGER NOT NULL,
+                account_id TEXT NOT NULL,
+                PRIMARY KEY (telegram_id, account_id)
+            );
         """)
         defaults = {
             "subject": "پیام برای شما",
@@ -191,8 +196,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     return
             data = await whatsapp_request("GET", "/accounts")
             available = [a for a in data.get("accounts", []) if a.get("connected")]
+            if not is_admin(update):
+                with closing(connect_db()) as conn:
+                    permitted = {
+                        row["account_id"] for row in conn.execute(
+                            "SELECT account_id FROM wa_permissions WHERE telegram_id=?", (uid,)
+                        ).fetchall()
+                    }
+                available = [a for a in available if a.get("id") in permitted]
             if not available:
-                await update.message.reply_text("فعلاً حساب واتساپ آمادهٔ ارسال نیست. بعداً دوباره امتحان کنید.")
+                await update.message.reply_text("فعلاً حساب واتساپ مجاز و آمادهٔ ارسال برای شما موجود نیست.")
                 return
             with closing(connect_db()) as conn:
                 row = conn.execute("SELECT value FROM settings WHERE key='wa_last_account'").fetchone()
@@ -247,6 +260,9 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "/wa_enable on|off — فعال/غیرفعال‌کردن استفادهٔ کاربران از واتساپ\n"
         "/wa_template <متن> — تعیین قالب پیام واتساپ\n"
         "/wa_user_limit <عدد> — سقف روزانهٔ درخواست هر کاربر (۱ تا ۲۰)\n"
+        "/wa_allow_user <شناسه_تلگرام> <شناسه_حساب> — اجازهٔ استفاده از حساب برای کاربر\n"
+        "/wa_deny_user <شناسه_تلگرام> <شناسه_حساب> — لغو اجازهٔ حساب\n"
+        "/wa_accounts — فهرست حساب‌ها (فقط ادمین)\n"
         "/wa_policy — مشاهدهٔ سیاست فعلی واتساپ\n\n"
         "نکته: این نسخه فقط تنظیمات را ذخیره می‌کند و ایمیل نمی‌فرستد."
     )
@@ -401,6 +417,41 @@ async def wa_user_limit_setting(update: Update, context: ContextTypes.DEFAULT_TY
     await update.effective_message.reply_text(f"سقف روزانهٔ درخواست هر کاربر روی {value} تنظیم شد.")
 
 
+async def wa_allow_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    if len(context.args) != 2 or not context.args[0].isdigit() or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", context.args[1]):
+        await update.effective_message.reply_text("استفاده: /wa_allow_user <شناسه_تلگرام> <شناسه_حساب>")
+        return
+    uid, account_id = int(context.args[0]), context.args[1]
+    try:
+        data = await whatsapp_request("GET", "/accounts")
+        if account_id not in {a.get("id") for a in data.get("accounts", [])}:
+            await update.effective_message.reply_text("این شناسهٔ حساب در سرویس واتساپ وجود ندارد. ابتدا /wa_accounts را بررسی کن.")
+            return
+    except Exception:
+        await update.effective_message.reply_text("سرویس واتساپ در دسترس نیست.")
+        return
+    with closing(connect_db()) as conn:
+        conn.execute("INSERT OR IGNORE INTO wa_permissions(telegram_id, account_id) VALUES(?, ?)", (uid, account_id))
+        conn.commit()
+    await update.effective_message.reply_text(f"به کاربر {uid} اجازهٔ استفاده از حساب {account_id} داده شد.")
+
+
+async def wa_deny_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    if len(context.args) != 2 or not context.args[0].isdigit() or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", context.args[1]):
+        await update.effective_message.reply_text("استفاده: /wa_deny_user <شناسه_تلگرام> <شناسه_حساب>")
+        return
+    with closing(connect_db()) as conn:
+        conn.execute("DELETE FROM wa_permissions WHERE telegram_id=? AND account_id=?", (int(context.args[0]), context.args[1]))
+        conn.commit()
+    await update.effective_message.reply_text("اجازهٔ این حساب برای کاربر حذف شد.")
+
+
 async def wa_policy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update):
         await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
@@ -483,14 +534,24 @@ async def wa_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
         return
     try:
-        result = await whatsapp_request("GET", "/status")
-        await update.effective_message.reply_text(
-            "وضعیت WhatsApp: " + ("متصل ✅" if result.get("connected") else "متصل نیست ❌")
-        )
+        if context.args:
+            account_id = context.args[0]
+            result = await whatsapp_request("GET", f"/status?accountId={account_id}")
+            await update.effective_message.reply_text(
+                f"حساب {account_id}: " + ("متصل ✅" if result.get("connected") else "متصل نیست ❌")
+            )
+        else:
+            result = await whatsapp_request("GET", "/accounts")
+            rows = result.get("accounts", [])
+            if not rows:
+                await update.effective_message.reply_text("هنوز حسابی ثبت نشده.")
+                return
+            lines = ["وضعیت حساب‌های واتساپ:"]
+            for row in rows:
+                lines.append(f"• {row.get('id')}: {'متصل' if row.get('connected') else row.get('status', 'نامشخص')}")
+            await update.effective_message.reply_text("\n".join(lines))
     except Exception:
-        await update.effective_message.reply_text(
-            "به سرویس WhatsApp دسترسی نیست. متغیرهای Railway را بررسی کن."
-        )
+        await update.effective_message.reply_text("به سرویس WhatsApp دسترسی نیست؛ متغیرهای Railway را بررسی کن.")
 
 
 async def wa_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -548,6 +609,8 @@ def main() -> None:
     app.add_handler(CommandHandler("wa_enable", wa_enable_setting))
     app.add_handler(CommandHandler("wa_template", wa_template_setting))
     app.add_handler(CommandHandler("wa_user_limit", wa_user_limit_setting))
+    app.add_handler(CommandHandler("wa_allow_user", wa_allow_user))
+    app.add_handler(CommandHandler("wa_deny_user", wa_deny_user))
     app.add_handler(CommandHandler("wa_policy", wa_policy))
     app.add_handler(CommandHandler("wa", wa_help))
     app.add_handler(CommandHandler("wa_pair", wa_pair))
