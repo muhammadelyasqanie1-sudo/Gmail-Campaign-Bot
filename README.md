@@ -14,11 +14,12 @@ A Telegram bot starter for admin-managed campaign settings, with an optional sep
 - Public `/start` and phone-number registration
 - Admin-only configuration commands: `/admin`, `/setsubject`, `/settemplate`, `/addrecipient`, `/delrecipient`, `/recipients`, `/setinterval`, `/setduration`, `/settings`
 - WhatsApp admin commands: `/wa`, `/wa_pair work 93700123456`, `/wa_accounts`, `/wa_status`, `/wa_remove_account work`, `/wa_send work 93700123456 Hello`, `/wa_allow_user 123456789 work`, `/wa_deny_user 123456789 work`, `/wa_users`, `/wa_history`
+- `/cancel` — cancel the current user send flow before confirming.
 - WhatsApp pairing and account listing are admin-only. Public users see only the send-message button; they enter a recipient number, preview the configured template, and must confirm before sending. The bot selects only connected accounts assigned to that Telegram user by the admin. Incoming direct text messages are forwarded to the admin's Telegram chat. Group messages are ignored.
 
 ## Deploy the Telegram bot
 
-1. Connect this repository to a Railway service using the repository root as the root directory.
+1. Connect this repository to a Railway service using the repository root as the root directory. The root `Procfile` declares `python app.py` as the Telegram bot start command.
 2. Add `BOT_TOKEN` and numeric `ADMIN_ID` under Variables.
 3. Set `DATABASE_PATH=bot_data.sqlite3`. Add a persistent volume if you need SQLite data to survive deployments.
 4. Deploy the service.
@@ -59,7 +60,7 @@ In the Telegram bot, as the admin:
 - `/wa_deny_user 123456789 work` — remove that permission
 - `/wa_send work 93700123456 Hello` — admin-only test send to a recipient who has agreed to receive the message.
 
-Public users only see the send button, enter a recipient number, preview the admin-configured message, and confirm. The service round-robins among connected accounts assigned to that user. Users do not see the account IDs or connection list. The service enforces a minimum 60-second cooldown for the same recipient on the same account and a minimum two-second gap between sends from an account. These defaults are service-level guardrails, not a bulk-messaging scheduler.
+Public users only see the send button, enter a recipient number, preview the admin-configured message (the admin can use multiline templates), and confirm. They can cancel the pending flow with `/cancel`. The service round-robins among connected accounts assigned to that user. Users do not see the account IDs or connection list. The service enforces a minimum 60-second cooldown for the same recipient on the same account and a minimum two-second gap between sends from an account. These defaults are service-level guardrails, not a bulk-messaging scheduler.
 
 Incoming direct text messages are forwarded to the Telegram admin. Group messages are ignored. The service does not intentionally log message bodies or pairing codes.
 
