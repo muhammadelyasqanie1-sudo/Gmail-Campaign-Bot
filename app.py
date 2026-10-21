@@ -554,11 +554,11 @@ async def wa_policy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     enabled = get_setting("whatsapp_enabled", "0") == "1"
     await update.effective_message.reply_text(
-        "سیاست فعلی واتساپ:\\n"
-        f"دسترسی کاربران: {'فعال' if enabled else 'غیرفعال'}\\n"
-        f"قالب پیام: {get_setting('whatsapp_template')}\\n"
-        f"سقف روزانهٔ درخواست هر کاربر: {get_setting('whatsapp_daily_limit_per_user', '5')}\\n"
-        "تأیید قبل از ارسال: الزامی\\n"
+        "سیاست فعلی واتساپ:\n"
+        f"دسترسی کاربران: {'فعال' if enabled else 'غیرفعال'}\n"
+        f"قالب پیام: {get_setting('whatsapp_template')}\n"
+        f"سقف روزانهٔ درخواست هر کاربر: {get_setting('whatsapp_daily_limit_per_user', '5')}\n"
+        "تأیید قبل از ارسال: الزامی\n"
         "ارسال باید فقط به مخاطب مجاز و رضایت‌داده انجام شود. عملیات تکراری بلاک/آنبلاک یا گزارش انبوه ارائه نمی‌شود."
     )
 
