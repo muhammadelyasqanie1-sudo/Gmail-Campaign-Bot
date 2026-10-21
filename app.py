@@ -235,6 +235,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     }
                 available = [a for a in available if a.get("id") in permitted]
             if not available:
+                if reserved_quota:
+                    with closing(connect_db()) as conn:
+                        conn.execute(
+                            "UPDATE wa_usage SET count=MAX(0,count-1) WHERE telegram_id=? AND usage_date=date('now')",
+                            (uid,),
+                        )
+                        conn.commit()
+                context.user_data.pop("wa_step", None)
                 await update.message.reply_text("فعلاً حساب واتساپ مجاز و آمادهٔ ارسال برای شما موجود نیست.")
                 return
             with closing(connect_db()) as conn:
