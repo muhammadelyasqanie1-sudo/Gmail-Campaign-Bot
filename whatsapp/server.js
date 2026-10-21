@@ -20,7 +20,11 @@ if (!TELEGRAM_TOKEN || !/^\d+$/.test(ADMIN_ID)) {
 }
 
 const accounts = new Map();
+const recipientLastSent = new Map();
+const accountLastSent = new Map();
 const logger = pino({ level: 'silent' });
+const RECIPIENT_COOLDOWN_MS = Math.max(60_000, Number(process.env.RECIPIENT_COOLDOWN_MS || 60_000));
+const ACCOUNT_SEND_GAP_MS = Math.max(2_000, Number(process.env.ACCOUNT_SEND_GAP_MS || 2_000));
 
 function safeTokenMatch(candidate) {
   const a = Buffer.from(String(candidate || ''));
@@ -121,6 +125,15 @@ async function connectAccount(id) {
   }
 }
 
+async function waitForSocket(account, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (account?.sock) return account;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error('WhatsApp session is still starting. Try again shortly.');
+}
+
 async function readJson(req) {
   let raw = '';
   for await (const chunk of req) {
@@ -167,6 +180,7 @@ const server = http.createServer(async (req, res) => {
       if (!/^\d{8,15}$/.test(phone)) return sendJson(res, 400, { ok: false, message: 'Use a phone number with country code, digits only.' });
       let account = accounts.get(accountId);
       if (!account?.sock) account = await connectAccount(accountId);
+      await waitForSocket(account);
       if (account.registered) return sendJson(res, 409, { ok: false, message: 'This account ID already has a linked WhatsApp session.' });
       const code = await account.sock.requestPairingCode(phone);
       return sendJson(res, 200, { ok: true, accountId, code });
@@ -182,7 +196,19 @@ const server = http.createServer(async (req, res) => {
       const account = chooseAccount(accountId);
       if (!account) return sendJson(res, 409, { ok: false, message: 'Specify a valid accountId; multiple accounts may be connected.' });
       if (!account.connected || !account.sock) return sendJson(res, 503, { ok: false, message: 'Selected WhatsApp account is not connected.' });
+      const now = Date.now();
+      const recipientKey = `${accountId}:${phone}`;
+      const lastRecipientSent = recipientLastSent.get(recipientKey) || 0;
+      const lastAccountSent = accountLastSent.get(accountId) || 0;
+      if (now - lastRecipientSent < RECIPIENT_COOLDOWN_MS) {
+        return sendJson(res, 429, { ok: false, message: 'This recipient is on a temporary cooldown for this account.' });
+      }
+      if (now - lastAccountSent < ACCOUNT_SEND_GAP_MS) {
+        return sendJson(res, 429, { ok: false, message: 'This account is sending too quickly. Wait and retry.' });
+      }
       await account.sock.sendMessage(`${phone}@s.whatsapp.net`, { text: message });
+      recipientLastSent.set(recipientKey, Date.now());
+      accountLastSent.set(accountId, Date.now());
       return sendJson(res, 200, { ok: true, accountId: accountId || 'main' });
     }
     return sendJson(res, 404, { ok: false, message: 'Not found' });
