@@ -1,46 +1,64 @@
 # Gmail Campaign Bot
 
-A Telegram bot starter for an admin-managed, consent-based Gmail campaign workflow.
+A Telegram bot starter for admin-managed campaign settings, with an optional separate WhatsApp Web session service.
 
 ## Current status
 
-This repository is a starter scaffold. It supports public `/start`, phone-number registration, and admin-only configuration stored in SQLite. **It does not send emails yet.** Gmail sending must be connected through Google OAuth 2.0 and the Gmail API before use.
+- The Telegram bot stores admin configuration in SQLite.
+- Gmail sending is **not implemented**.
+- The optional WhatsApp service uses the community-maintained, unofficial Baileys library. It can request a WhatsApp Web pairing code, send direct text messages, and forward incoming direct text messages to the Telegram admin.
+- WhatsApp linking is not an official WhatsApp Business API integration. Account restrictions are possible. Do not use it for unsolicited or bulk messages.
 
-## Features in this starter
+## Telegram bot features
 
-- Public Telegram bot entry point
-- Phone number input in international format (for example, `+93700123456`)
-- Admin-only settings commands
-- Manually managed recipient allowlist
-- Editable subject and message template, including `{{user_phone}}`
-- Editable interval in seconds and duration in minutes
-- SQLite persistence
-- Secrets supplied via environment variables, not source code
+- Public `/start` and phone-number registration
+- Admin-only configuration commands: `/admin`, `/setsubject`, `/settemplate`, `/addrecipient`, `/delrecipient`, `/recipients`, `/setinterval`, `/setduration`, `/settings`
+- WhatsApp admin commands: `/wa`, `/wa_pair 93700123456`, `/wa_status`, `/wa_send 93700123456 Hello`
+- WhatsApp pairing codes and messages are handled only by the admin commands; incoming direct text messages are forwarded to the admin's Telegram chat. Group messages are ignored.
 
-## Commands
+## Deploy the Telegram bot
 
-- `/start` — public entry point
-- `/admin` — admin command guide
-- `/setsubject <subject>` — set email subject (admin)
-- `/settemplate <text>` — set body template (admin); use `{{user_phone}}` for the user's registered phone
-- `/addrecipient <email>` — add a recipient to the allowlist (admin; only add people who agreed to receive mail)
-- `/delrecipient <email>` — remove an allowlisted recipient (admin)
-- `/recipients` — list allowlisted recipients (admin)
-- `/setinterval <seconds>` — set requested interval (admin; sending must still follow Gmail quotas and anti-abuse controls)
-- `/setduration <minutes>` — set campaign duration in minutes (admin)
-- `/settings` — view current settings (admin)
+1. Connect this repository to a Railway service using the repository root as the root directory.
+2. Add `BOT_TOKEN` and numeric `ADMIN_ID` under Variables.
+3. Set `DATABASE_PATH=bot_data.sqlite3`. Add a persistent volume if you need SQLite data to survive deployments.
+4. Deploy the service.
 
-## Run locally
+## Deploy the WhatsApp service separately
 
-1. Create a Telegram bot using BotFather.
-2. Copy `.env.example` to `.env` and fill in `BOT_TOKEN` and your numeric Telegram `ADMIN_ID`.
-3. Install dependencies: `pip install -r requirements.txt`
-4. Run: `python app.py`
+This is a monorepo: deploy a second Railway service from the same GitHub repository.
 
-## Railway
+1. In the Railway project, create a new service from this same GitHub repository.
+2. In that service's Settings, set the **Root Directory** to `/whatsapp`.
+3. Set these Variables in the WhatsApp service:
+   - `BOT_TOKEN`: same Telegram bot token used by the Telegram service, so incoming WhatsApp messages can be forwarded to the admin.
+   - `ADMIN_ID`: the numeric Telegram user ID of the admin.
+   - `WHATSAPP_SERVICE_TOKEN`: a long random secret. Use the exact same value in both Railway services. Do not post it in chats or commit it to GitHub.
+   - `AUTH_DIR=/data/auth_info`
+   - `PORT`: Railway normally provides this automatically; otherwise use `3000`.
+4. Attach a Railway persistent volume to the WhatsApp service and set its mount path to `/data`. This is required to preserve the WhatsApp session across restarts and deployments.
+5. Deploy. Confirm the service logs show it is listening and the `/health` route responds. Do not expose or share the contents of `/data/auth_info`.
+6. In the WhatsApp service, generate a public domain using Railway Networking. Copy the base URL (for example, `https://your-service.up.railway.app`).
+7. In the Telegram bot service, set:
+   - `WHATSAPP_SERVICE_URL`: the WhatsApp service base URL, without a trailing slash.
+   - `WHATSAPP_SERVICE_TOKEN`: exactly the same secret used by the WhatsApp service.
+8. Redeploy the Telegram bot service.
 
-Connect this GitHub repository to Railway and add `BOT_TOKEN` and `ADMIN_ID` under Variables. `DATABASE_PATH` can be set to `bot_data.sqlite3`, but a persistent volume is recommended for SQLite data. Do not place real credentials in GitHub.
+## Pair and use WhatsApp
 
-## Gmail integration
+In the Telegram bot, as the admin:
 
-The next phase must use Google OAuth 2.0 and Gmail API with encrypted/protected token storage. Do not ask users for Gmail passwords or verification codes. Sending must be limited to explicitly authorized, consenting recipients, honor unsubscribes and Gmail limits, and stop on quota or abuse errors. This starter intentionally does not implement repeated bulk sending.
+- `/wa` — show WhatsApp commands
+- `/wa_pair 93700123456` — request a pairing code. Enter the country code and digits only, without `+`, spaces, or dashes. In WhatsApp, open Settings → Linked devices → Link a device → Link with phone number, then enter the code if that option is available.
+- `/wa_status` — check whether the session is connected
+- `/wa_send 93700123456 Hello` — send a direct text message to a number that has agreed to receive it.
+
+Incoming direct text messages are forwarded to the Telegram admin. Group messages are ignored. The service does not intentionally log message bodies or pairing codes.
+
+## Security and reliability
+
+- Never put real secrets, pairing codes, or WhatsApp session files in GitHub.
+- Only the admin Telegram ID can request pairing codes or send messages through bot commands.
+- Use messages only with recipients who expect them; honor requests to stop.
+- Baileys is unofficial and can break when WhatsApp changes. Linking may result in account restrictions. Use the official WhatsApp Business Platform for business-critical messaging.
+- The WhatsApp service requires Node.js 20 or later. It pins Baileys 6.7.18 to avoid the breaking API changes introduced in Baileys 7.
+- Gmail API/OAuth integration remains a separate future task; this repository currently does not send email.
