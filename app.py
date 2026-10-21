@@ -350,7 +350,7 @@ async def set_subject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def set_template(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update):
         await update.message.reply_text("این دستور فقط برای ادمین است."); return
-    value = " ".join(context.args).strip()
+    value = command_payload(update)
     if not value or len(value) > 10000:
         await update.message.reply_text("استفاده: /settemplate متن قالب"); return
     set_setting("template", value)
@@ -463,7 +463,7 @@ async def wa_template_setting(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not is_admin(update):
         await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
         return
-    value = " ".join(context.args).strip()
+    value = command_payload(update)
     if not value or len(value) > 4000:
         await update.effective_message.reply_text("استفاده: /wa_template متن پیام (حداکثر ۴۰۰۰ نویسه)")
         return
