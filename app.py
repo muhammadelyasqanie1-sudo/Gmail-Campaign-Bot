@@ -68,6 +68,10 @@ def init_db():
             "template": DEFAULT_TEMPLATE,
             "interval_seconds": "60",
             "duration_minutes": "2",
+            "whatsapp_enabled": "0",
+            "whatsapp_template": "سلام، امیدوارم حالتان خوب باشد.",
+            "whatsapp_daily_limit_per_user": "5",
+            "whatsapp_require_confirmation": "1",
         }
         conn.executemany(
             "INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)",
@@ -158,7 +162,11 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "/recipients\n"
         "/setinterval <ثانیه>\n"
         "/setduration <دقیقه>\n"
-        "/settings\n\n"
+        "/settings\n"
+        "/wa_enable on|off — فعال/غیرفعال‌کردن استفادهٔ کاربران از واتساپ\n"
+        "/wa_template <متن> — تعیین قالب پیام واتساپ\n"
+        "/wa_user_limit <عدد> — سقف روزانهٔ درخواست هر کاربر (۱ تا ۲۰)\n"
+        "/wa_policy — مشاهدهٔ سیاست فعلی واتساپ\n\n"
         "نکته: این نسخه فقط تنظیمات را ذخیره می‌کند و ایمیل نمی‌فرستد."
     )
 
@@ -266,6 +274,64 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"مدت: {get_setting('duration_minutes')} دقیقه\n"
         f"گیرندگان مجاز: {count}\nکاربران ثبت‌شده: {users}\n\n"
         "ارسال Gmail هنوز فعال نیست."
+    )
+
+
+
+async def wa_enable_setting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    value = context.args[0].lower() if context.args else ""
+    if value not in {"on", "off"}:
+        await update.effective_message.reply_text("استفاده: /wa_enable on یا /wa_enable off")
+        return
+    set_setting("whatsapp_enabled", "1" if value == "on" else "0")
+    await update.effective_message.reply_text(
+        "دسترسی کاربران به قابلیت واتساپ فعال شد." if value == "on"
+        else "قابلیت واتساپ برای کاربران غیرفعال شد. دستورات مدیریتی اتصال همچنان فقط برای ادمین هستند."
+    )
+
+
+async def wa_template_setting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    value = " ".join(context.args).strip()
+    if not value or len(value) > 4000:
+        await update.effective_message.reply_text("استفاده: /wa_template متن پیام (حداکثر ۴۰۰۰ نویسه)")
+        return
+    set_setting("whatsapp_template", value)
+    await update.effective_message.reply_text("قالب پیش‌فرض واتساپ ذخیره شد.")
+
+
+async def wa_user_limit_setting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    try:
+        value = int(context.args[0])
+        if not 1 <= value <= 20:
+            raise ValueError
+    except (IndexError, ValueError):
+        await update.effective_message.reply_text("استفاده: /wa_user_limit عدد (۱ تا ۲۰ درخواست در روز)")
+        return
+    set_setting("whatsapp_daily_limit_per_user", str(value))
+    await update.effective_message.reply_text(f"سقف روزانهٔ درخواست هر کاربر روی {value} تنظیم شد.")
+
+
+async def wa_policy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    enabled = get_setting("whatsapp_enabled", "0") == "1"
+    await update.effective_message.reply_text(
+        "سیاست فعلی واتساپ:\\n"
+        f"دسترسی کاربران: {'فعال' if enabled else 'غیرفعال'}\\n"
+        f"قالب پیام: {get_setting('whatsapp_template')}\\n"
+        f"سقف روزانهٔ درخواست هر کاربر: {get_setting('whatsapp_daily_limit_per_user', '5')}\\n"
+        "تأیید قبل از ارسال: الزامی\\n"
+        "ارسال باید فقط به مخاطب مجاز و رضایت‌داده انجام شود. عملیات تکراری بلاک/آنبلاک یا گزارش انبوه ارائه نمی‌شود."
     )
 
 
@@ -386,6 +452,10 @@ def main() -> None:
     app.add_handler(CommandHandler("setinterval", set_interval))
     app.add_handler(CommandHandler("setduration", set_duration))
     app.add_handler(CommandHandler("settings", settings))
+    app.add_handler(CommandHandler("wa_enable", wa_enable_setting))
+    app.add_handler(CommandHandler("wa_template", wa_template_setting))
+    app.add_handler(CommandHandler("wa_user_limit", wa_user_limit_setting))
+    app.add_handler(CommandHandler("wa_policy", wa_policy))
     app.add_handler(CommandHandler("wa", wa_help))
     app.add_handler(CommandHandler("wa_pair", wa_pair))
     app.add_handler(CommandHandler("wa_status", wa_status))
