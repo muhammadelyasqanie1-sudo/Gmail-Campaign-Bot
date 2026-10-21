@@ -203,17 +203,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         phone = context.user_data.get("wa_phone", "")
         message = context.user_data.get("wa_message", "")
         try:
-            with closing(connect_db()) as conn:
-                row = conn.execute(
-                    "SELECT count FROM wa_usage WHERE telegram_id=? AND usage_date=date('now')",
-                    (uid,),
-                ).fetchone()
-                used = int(row["count"]) if row else 0
+            reserved_quota = False
+            if not is_admin(update):
                 limit = int(get_setting("whatsapp_daily_limit_per_user", "5"))
-                if not is_admin(update) and used >= limit:
-                    context.user_data.pop("wa_step", None)
-                    await update.message.reply_text(f"سقف روزانهٔ شما پر شده است ({limit} درخواست).")
-                    return
+                with closing(connect_db()) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    row = conn.execute(
+                        "SELECT count FROM wa_usage WHERE telegram_id=? AND usage_date=date('now')",
+                        (uid,),
+                    ).fetchone()
+                    used = int(row["count"]) if row else 0
+                    if used >= limit:
+                        conn.rollback()
+                        context.user_data.pop("wa_step", None)
+                        await update.message.reply_text(f"سقف روزانهٔ شما پر شده است ({limit} درخواست).")
+                        return
+                    conn.execute(
+                        "INSERT INTO wa_usage(telegram_id,usage_date,count) VALUES(?,date('now'),1) "
+                        "ON CONFLICT(telegram_id,usage_date) DO UPDATE SET count=count+1", (uid,)
+                    )
+                    conn.commit()
+                    reserved_quota = True
             data = await whatsapp_request("GET", "/accounts")
             available = [a for a in data.get("accounts", []) if a.get("connected")]
             if not is_admin(update):
@@ -241,15 +251,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "POST", "/send", {"accountId": account_id, "phone": phone, "message": message}
             )
             if result.get("ok"):
-                if not is_admin(update):
-                    with closing(connect_db()) as conn:
-                        conn.execute(
-                            "INSERT INTO wa_usage(telegram_id,usage_date,count) VALUES(?,date('now'),1) "
-                            "ON CONFLICT(telegram_id,usage_date) DO UPDATE SET count=count+1", (uid,)
-                        )
-                        conn.commit()
                 audit_event(uid, "send", "accepted_by_service", account_id, phone)
             else:
+                if reserved_quota:
+                    with closing(connect_db()) as conn:
+                        conn.execute(
+                            "UPDATE wa_usage SET count=MAX(0,count-1) WHERE telegram_id=? AND usage_date=date('now')",
+                            (uid,),
+                        )
+                        conn.commit()
                 audit_event(uid, "send", "service_rejected", account_id, phone)
             context.user_data.pop("wa_step", None)
             context.user_data.pop("wa_phone", None)
@@ -261,6 +271,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if is_admin(update):
                 await update.message.reply_text(f"حساب استفاده‌شده: {account_id}")
         except Exception as exc:
+            if 'reserved_quota' in locals() and reserved_quota:
+                with closing(connect_db()) as conn:
+                    conn.execute(
+                        "UPDATE wa_usage SET count=MAX(0,count-1) WHERE telegram_id=? AND usage_date=date('now')",
+                        (uid,),
+                    )
+                    conn.commit()
             audit_event(uid, "send", "failed")
             log.warning("WhatsApp send request failed: %s", exc)
             await update.message.reply_text("ارسال ناموفق بود؛ سرویس واتساپ و حساب‌های متصل را بررسی کنید.")
