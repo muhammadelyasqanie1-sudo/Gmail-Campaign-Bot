@@ -84,6 +84,12 @@ async function connectAccount(id) {
       await saveCreds();
     });
     sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+      if (account.removing) {
+        account.connected = false;
+        account.status = 'removed';
+        account.sock = null;
+        return;
+      }
       account.connected = connection === 'open';
       if (connection === 'open') {
         account.status = 'connected';
@@ -165,6 +171,22 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         accounts: [...accounts.entries()].map(([id, account]) => accountSummary(id, account)),
       });
+    }
+    if (req.method === 'DELETE' && req.url.startsWith('/accounts/')) {
+      const accountId = decodeURIComponent(req.url.slice('/accounts/'.length));
+      if (!validAccountId(accountId)) return sendJson(res, 400, { ok: false, message: 'Invalid account ID.' });
+      const account = accounts.get(accountId);
+      if (!account) return sendJson(res, 404, { ok: false, message: 'Account not found.' });
+      account.removing = true;
+      account.connected = false;
+      account.status = 'removed';
+      if (account.sock) {
+        try { await account.sock.logout(); } catch { /* Session files are removed below. */ }
+        try { account.sock.end(undefined); } catch { /* Ignore close errors. */ }
+      }
+      accounts.delete(accountId);
+      fs.rmSync(accountPath(accountId), { recursive: true, force: true });
+      return sendJson(res, 200, { ok: true, accountId, removed: true });
     }
     if (req.method === 'GET' && req.url.startsWith('/status')) {
       const accountId = new URL(req.url, 'http://localhost').searchParams.get('accountId') || '';
