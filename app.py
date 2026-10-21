@@ -73,6 +73,15 @@ def init_db():
                 account_id TEXT NOT NULL,
                 PRIMARY KEY (telegram_id, account_id)
             );
+            CREATE TABLE IF NOT EXISTS wa_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL,
+                account_id TEXT,
+                recipient_hash TEXT,
+                action TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         defaults = {
             "subject": "پیام برای شما",
@@ -87,6 +96,17 @@ def init_db():
         conn.executemany(
             "INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)",
             defaults.items(),
+        )
+        conn.commit()
+
+
+def audit_event(telegram_id: int, action: str, outcome: str, account_id: str = "", phone: str = "") -> None:
+    # Store a one-way digest rather than the recipient phone in audit history.
+    digest = __import__("hashlib").sha256(phone.encode("utf-8")).hexdigest()[:16] if phone else None
+    with closing(connect_db()) as conn:
+        conn.execute(
+            "INSERT INTO wa_audit(telegram_id, account_id, recipient_hash, action, outcome) VALUES(?, ?, ?, ?, ?)",
+            (telegram_id, account_id or None, digest, action, outcome[:80]),
         )
         conn.commit()
 
@@ -216,15 +236,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     "INSERT INTO settings(key,value) VALUES('wa_last_account',?) "
                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (account_id,)
                 )
-                if not is_admin(update):
-                    conn.execute(
-                        "INSERT INTO wa_usage(telegram_id,usage_date,count) VALUES(?,date('now'),1) "
-                        "ON CONFLICT(telegram_id,usage_date) DO UPDATE SET count=count+1", (uid,)
-                    )
                 conn.commit()
             result = await whatsapp_request(
                 "POST", "/send", {"accountId": account_id, "phone": phone, "message": message}
             )
+            if result.get("ok"):
+                if not is_admin(update):
+                    with closing(connect_db()) as conn:
+                        conn.execute(
+                            "INSERT INTO wa_usage(telegram_id,usage_date,count) VALUES(?,date('now'),1) "
+                            "ON CONFLICT(telegram_id,usage_date) DO UPDATE SET count=count+1", (uid,)
+                        )
+                        conn.commit()
+                audit_event(uid, "send", "accepted_by_service", account_id, phone)
+            else:
+                audit_event(uid, "send", "service_rejected", account_id, phone)
             context.user_data.pop("wa_step", None)
             context.user_data.pop("wa_phone", None)
             context.user_data.pop("wa_message", None)
@@ -235,6 +261,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if is_admin(update):
                 await update.message.reply_text(f"حساب استفاده‌شده: {account_id}")
         except Exception as exc:
+            audit_event(uid, "send", "failed")
             log.warning("WhatsApp send request failed: %s", exc)
             await update.message.reply_text("ارسال ناموفق بود؛ سرویس واتساپ و حساب‌های متصل را بررسی کنید.")
         return
@@ -263,6 +290,8 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "/wa_allow_user <شناسه_تلگرام> <شناسه_حساب> — اجازهٔ استفاده از حساب برای کاربر\n"
         "/wa_deny_user <شناسه_تلگرام> <شناسه_حساب> — لغو اجازهٔ حساب\n"
         "/wa_accounts — فهرست حساب‌ها (فقط ادمین)\n"
+        "/wa_users — کاربران و تعداد حساب‌های مجاز\n"
+        "/wa_history — ۲۰ رویداد اخیر\n"
         "/wa_policy — مشاهدهٔ سیاست فعلی واتساپ\n\n"
         "نکته: ارسال Gmail هنوز پیاده‌سازی نشده است؛ قابلیت واتساپ جداگانه تنظیم می‌شود."
     )
@@ -452,6 +481,47 @@ async def wa_deny_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text("اجازهٔ این حساب برای کاربر حذف شد.")
 
 
+async def wa_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    with closing(connect_db()) as conn:
+        rows = conn.execute(
+            "SELECT u.telegram_id, u.username, COUNT(p.account_id) AS accounts "
+            "FROM users u LEFT JOIN wa_permissions p ON p.telegram_id=u.telegram_id "
+            "GROUP BY u.telegram_id, u.username ORDER BY u.telegram_id DESC LIMIT 100"
+        ).fetchall()
+    if not rows:
+        await update.effective_message.reply_text("هنوز کاربری ثبت نشده است.")
+        return
+    lines = ["کاربران ثبت‌شده (حداکثر ۱۰۰ نفر):"]
+    for row in rows:
+        username = ("@" + row["username"]) if row["username"] else "بدون‌نام‌کاربری"
+        lines.append(f"• {row['telegram_id']} | {username} | حساب‌های مجاز: {row['accounts']}")
+    await update.effective_message.reply_text("\n".join(lines))
+
+
+async def wa_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    with closing(connect_db()) as conn:
+        rows = conn.execute(
+            "SELECT telegram_id, account_id, action, outcome, created_at "
+            "FROM wa_audit ORDER BY id DESC LIMIT 20"
+        ).fetchall()
+    if not rows:
+        await update.effective_message.reply_text("هنوز سابقهٔ عملیاتی ثبت نشده است.")
+        return
+    lines = ["۲۰ رویداد اخیر (شماره گیرنده ذخیره نمی‌شود):"]
+    for row in rows:
+        lines.append(
+            f"• {row['created_at']} | کاربر {row['telegram_id']} | "
+            f"حساب {row['account_id'] or '-'} | {row['action']} | {row['outcome']}"
+        )
+    await update.effective_message.reply_text("\n".join(lines))
+
+
 async def wa_policy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update):
         await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
@@ -611,6 +681,8 @@ def main() -> None:
     app.add_handler(CommandHandler("wa_user_limit", wa_user_limit_setting))
     app.add_handler(CommandHandler("wa_allow_user", wa_allow_user))
     app.add_handler(CommandHandler("wa_deny_user", wa_deny_user))
+    app.add_handler(CommandHandler("wa_users", wa_users))
+    app.add_handler(CommandHandler("wa_history", wa_history))
     app.add_handler(CommandHandler("wa_policy", wa_policy))
     app.add_handler(CommandHandler("wa", wa_help))
     app.add_handler(CommandHandler("wa_pair", wa_pair))
