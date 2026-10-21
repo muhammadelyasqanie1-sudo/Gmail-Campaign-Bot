@@ -62,3 +62,14 @@ Incoming direct text messages are forwarded to the Telegram admin. Group message
 - Baileys is unofficial and can break when WhatsApp changes. Linking may result in account restrictions. Use the official WhatsApp Business Platform for business-critical messaging.
 - The WhatsApp service requires Node.js 20 or later. It pins Baileys 6.7.18 to avoid the breaking API changes introduced in Baileys 7.
 - Gmail API/OAuth integration remains a separate future task; this repository currently does not send email.
+
+
+## Editable WhatsApp admin policy (initial configuration)
+
+The Telegram admin can now configure these stored settings:
+- `/wa_enable on` or `/wa_enable off` — set the user-facing WhatsApp feature flag.
+- `/wa_template <text>` — save the default WhatsApp message template.
+- `/wa_user_limit <number>` — save a per-user daily request limit from 1 to 20.
+- `/wa_policy` — inspect the saved policy.
+
+These commands store configuration in SQLite. They are an initial admin configuration layer; they do not yet implement multi-account sessions, public-user sending, per-user quota enforcement, or an interactive approval flow. The current Baileys service supports only one linked WhatsApp session. Do not treat the feature flag as an enforcement boundary until the public-user workflow and backend checks are implemented. Repeated automated block/unblock actions and bulk reporting are not provided. Only send messages to recipients who have agreed to receive them.
