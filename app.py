@@ -330,6 +330,8 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "/wa_deny_user <شناسه_تلگرام> <شناسه_حساب> — لغو اجازهٔ حساب\n"
         "/wa_accounts — فهرست حساب‌ها (فقط ادمین)\n"
         "/wa_remove_account <شناسه> — حذف نشست حساب و دسترسی‌های آن\n"
+        "/wa_block <شناسه> <شماره> — بلاک یک مخاطب در یک حساب خودت\n"
+        "/wa_unblock <شناسه> <شماره> — آنبلاک موردی مخاطب\n"
         "/wa_users — کاربران و تعداد حساب‌های مجاز\n"
         "/wa_history — ۲۰ رویداد اخیر\n"
         "/wa_policy — مشاهدهٔ سیاست فعلی واتساپ\n\n"
@@ -689,6 +691,43 @@ async def wa_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text("به سرویس WhatsApp دسترسی نیست؛ متغیرهای Railway را بررسی کن.")
 
 
+async def wa_block_action(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    if len(context.args) != 2 or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", context.args[0]):
+        command = "wa_block" if action == "block" else "wa_unblock"
+        await update.effective_message.reply_text(f"استفاده: /{command} <شناسه_حساب> <شماره>")
+        return
+    account_id = context.args[0]
+    phone = re.sub(r"\D", "", context.args[1])
+    if not 8 <= len(phone) <= 15:
+        await update.effective_message.reply_text("شماره باید با کد کشور وارد شود.")
+        return
+    try:
+        result = await whatsapp_request(
+            "POST", "/block", {"accountId": account_id, "phone": phone, "action": action}
+        )
+        outcome = "completed" if result.get("ok") else "failed"
+        audit_event(update.effective_user.id, action, outcome, account_id, phone)
+        await update.effective_message.reply_text(
+            f"عملیات {'بلاک' if action == 'block' else 'آنبلاک'} برای حساب {account_id} به سرویس واتساپ ارسال شد."
+            if result.get("ok") else "عملیات انجام نشد؛ حساب و سرویس را بررسی کن."
+        )
+    except Exception as exc:
+        audit_event(update.effective_user.id, action, "failed", account_id, phone)
+        log.warning("WhatsApp %s request failed: %s", action, exc)
+        await update.effective_message.reply_text("عملیات ناموفق بود؛ وضعیت حساب واتساپ را بررسی کن.")
+
+
+async def wa_block(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await wa_block_action(update, context, "block")
+
+
+async def wa_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await wa_block_action(update, context, "unblock")
+
+
 async def wa_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update):
         await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
@@ -754,6 +793,8 @@ def main() -> None:
     app.add_handler(CommandHandler("wa_pair", wa_pair))
     app.add_handler(CommandHandler("wa_accounts", wa_accounts))
     app.add_handler(CommandHandler("wa_remove_account", wa_remove_account))
+    app.add_handler(CommandHandler("wa_block", wa_block))
+    app.add_handler(CommandHandler("wa_unblock", wa_unblock))
     app.add_handler(CommandHandler("wa_status", wa_status))
     app.add_handler(CommandHandler("wa_send", wa_send))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
