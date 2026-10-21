@@ -207,6 +207,20 @@ const server = http.createServer(async (req, res) => {
       const code = await account.sock.requestPairingCode(phone);
       return sendJson(res, 200, { ok: true, accountId, code });
     }
+    if (req.method === 'POST' && req.url === '/block') {
+      const body = await readJson(req);
+      const accountId = String(body.accountId || '');
+      const phone = String(body.phone || '').replace(/\D/g, '');
+      const action = String(body.action || '');
+      if (!/^\d{8,15}$/.test(phone) || !['block', 'unblock'].includes(action)) {
+        return sendJson(res, 400, { ok: false, message: 'Invalid phone or block action.' });
+      }
+      const account = chooseAccount(accountId);
+      if (!account) return sendJson(res, 409, { ok: false, message: 'Specify a valid accountId.' });
+      if (!account.connected || !account.sock) return sendJson(res, 503, { ok: false, message: 'Selected WhatsApp account is not connected.' });
+      await account.sock.updateBlockStatus(`${phone}@s.whatsapp.net`, action);
+      return sendJson(res, 200, { ok: true, accountId, action });
+    }
     if (req.method === 'POST' && req.url === '/send') {
       const body = await readJson(req);
       const accountId = String(body.accountId || '');
