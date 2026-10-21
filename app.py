@@ -62,6 +62,12 @@ def init_db():
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS wa_usage (
+                telegram_id INTEGER NOT NULL,
+                usage_date TEXT NOT NULL DEFAULT (date('now')),
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (telegram_id, usage_date)
+            );
         """)
         defaults = {
             "subject": "پیام برای شما",
@@ -107,46 +113,121 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             (user.id, user.username or ""),
         )
         conn.commit()
-    keyboard = ReplyKeyboardMarkup(
-        [[KeyboardButton("📧 ارسال ایمیل")]], resize_keyboard=True
-    )
-    await update.message.reply_text(
-        "سلام! به ربات خوش آمدید.\n"
-        "برای ادامه، گزینهٔ «ارسال ایمیل» را انتخاب کنید.\n\n"
-        "این نسخه هنوز ارسال ایمیل را انجام نمی‌دهد؛ اتصال امن Gmail باید توسط ادمین پیکربندی شود.",
-        reply_markup=keyboard,
-    )
+    if is_admin(update):
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton("📨 ارسال پیام")], [KeyboardButton("⚙️ مدیریت واتساپ")]],
+            resize_keyboard=True,
+        )
+        greeting = "سلام ادمین! برای ارسال پیام یا مدیریت واتساپ یکی را انتخاب کن. دستورها: /admin"
+    else:
+        keyboard = ReplyKeyboardMarkup([[KeyboardButton("📨 ارسال پیام")]], resize_keyboard=True)
+        greeting = "سلام! خوش آمدید. برای شروع فقط روی «ارسال پیام» بزنید."
+    await update.message.reply_text(greeting, reply_markup=keyboard)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
-    text = (update.message.text or "").strip()
+    value = (update.message.text or "").strip()
     uid = update.effective_user.id
-    if text == "📧 ارسال ایمیل":
-        context.user_data["awaiting_phone"] = True
-        await update.message.reply_text(
-            "لطفاً شمارهٔ تلفن خود را با کد کشور وارد کنید؛ مثلاً +93700123456.\n"
-            "این شماره طبق قالبی که ادمین تعیین کرده جایگزین {{user_phone}} می‌شود.",
-            reply_markup=ReplyKeyboardRemove(),
-        )
+    if value == "⚙️ مدیریت واتساپ" and is_admin(update):
+        await admin_help(update, context)
         return
-    if context.user_data.get("awaiting_phone"):
-        if not PHONE_RE.fullmatch(text):
-            await update.message.reply_text(
-                "فرمت شماره درست نیست. لطفاً با + و کد کشور وارد کنید؛ مثلاً +93700123456."
-            )
+    if value == "📨 ارسال پیام":
+        if not is_admin(update) and get_setting("whatsapp_enabled", "0") != "1":
+            await update.message.reply_text("ارسال پیام فعلاً توسط ادمین غیرفعال است.")
             return
-        with closing(connect_db()) as conn:
-            conn.execute("UPDATE users SET phone=?, phone_submitted_at=CURRENT_TIMESTAMP WHERE telegram_id=?", (text, uid))
-            conn.commit()
-        context.user_data["awaiting_phone"] = False
+        context.user_data["wa_step"] = "phone"
         await update.message.reply_text(
-            "شماره ثبت شد. تنظیمات کمپین از پیش تعیین‌شده دریافت شد.\n"
-            "در حال حاضر ارسال ایمیل در این نسخه غیرفعال است تا اتصال Gmail و کنترل رضایت گیرندگان پیکربندی شود."
+            "شمارهٔ گیرنده را با کد کشور وارد کنید؛ مثال +93700123456.\n"
+            "فقط به گیرنده‌ای پیام بفرستید که دریافت پیام را پذیرفته باشد."
         )
         return
-    await update.message.reply_text("برای شروع /start را بزنید یا از منو گزینهٔ ارسال ایمیل را انتخاب کنید.")
+
+    step = context.user_data.get("wa_step")
+    if step == "phone":
+        phone = re.sub(r"\D", "", value)
+        if not 8 <= len(phone) <= 15:
+            await update.message.reply_text("شماره معتبر نیست؛ با کد کشور وارد کنید، مثل +93700123456.")
+            return
+        template = get_setting("whatsapp_template", "سلام، امیدوارم حالتان خوب باشد.")
+        message = template.replace("{{user_phone}}", phone).replace("{{recipient_phone}}", phone)
+        context.user_data["wa_phone"] = phone
+        context.user_data["wa_message"] = message
+        context.user_data["wa_step"] = "confirm"
+        await update.message.reply_text(
+            "پیش‌نمایش پیام:\n\n" + message +
+            "\n\nاگر گیرنده اجازهٔ دریافت پیام را داده، برای ادامه دقیقاً «تأیید و ارسال» بنویسید؛ برای لغو «لغو» بنویسید."
+        )
+        return
+
+    if step == "confirm":
+        if value in {"لغو", "cancel", "نه"}:
+            context.user_data.pop("wa_step", None)
+            context.user_data.pop("wa_phone", None)
+            context.user_data.pop("wa_message", None)
+            await update.message.reply_text("درخواست لغو شد.")
+            return
+        if value != "تأیید و ارسال":
+            await update.message.reply_text("برای ارسال «تأیید و ارسال» یا برای لغو «لغو» بنویسید.")
+            return
+        if not is_admin(update) and get_setting("whatsapp_enabled", "0") != "1":
+            context.user_data.clear()
+            await update.message.reply_text("ارسال پیام توسط ادمین غیرفعال شده است.")
+            return
+        phone = context.user_data.get("wa_phone", "")
+        message = context.user_data.get("wa_message", "")
+        try:
+            with closing(connect_db()) as conn:
+                row = conn.execute(
+                    "SELECT count FROM wa_usage WHERE telegram_id=? AND usage_date=date('now')",
+                    (uid,),
+                ).fetchone()
+                used = int(row["count"]) if row else 0
+                limit = int(get_setting("whatsapp_daily_limit_per_user", "5"))
+                if not is_admin(update) and used >= limit:
+                    context.user_data.pop("wa_step", None)
+                    await update.message.reply_text(f"سقف روزانهٔ شما پر شده است ({limit} درخواست).")
+                    return
+            data = await whatsapp_request("GET", "/accounts")
+            available = [a for a in data.get("accounts", []) if a.get("connected")]
+            if not available:
+                await update.message.reply_text("فعلاً حساب واتساپ آمادهٔ ارسال نیست. بعداً دوباره امتحان کنید.")
+                return
+            with closing(connect_db()) as conn:
+                row = conn.execute("SELECT value FROM settings WHERE key='wa_last_account'").fetchone()
+                previous = row["value"] if row else ""
+                ids = [a["id"] for a in available]
+                account_id = ids[(ids.index(previous) + 1) % len(ids)] if previous in ids else ids[0]
+                conn.execute(
+                    "INSERT INTO settings(key,value) VALUES('wa_last_account',?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (account_id,)
+                )
+                if not is_admin(update):
+                    conn.execute(
+                        "INSERT INTO wa_usage(telegram_id,usage_date,count) VALUES(?,date('now'),1) "
+                        "ON CONFLICT(telegram_id,usage_date) DO UPDATE SET count=count+1", (uid,)
+                    )
+                conn.commit()
+            result = await whatsapp_request(
+                "POST", "/send", {"accountId": account_id, "phone": phone, "message": message}
+            )
+            context.user_data.pop("wa_step", None)
+            context.user_data.pop("wa_phone", None)
+            context.user_data.pop("wa_message", None)
+            await update.message.reply_text(
+                "درخواست ارسال به سرویس واتساپ تحویل شد." if result.get("ok")
+                else "ارسال انجام نشد؛ بعداً تلاش کنید."
+            )
+            if is_admin(update):
+                await update.message.reply_text(f"حساب استفاده‌شده: {account_id}")
+        except Exception as exc:
+            log.warning("WhatsApp send request failed: %s", exc)
+            await update.message.reply_text("ارسال ناموفق بود؛ سرویس واتساپ و حساب‌های متصل را بررسی کنید.")
+        return
+    await update.message.reply_text("برای شروع /start را بزنید یا روی «ارسال پیام» بزنید.")
+
+
 
 
 async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -353,28 +434,48 @@ async def wa_pair(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update):
         await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
         return
-    phone = re.sub(r"\D", "", context.args[0] if context.args else "")
-    if not 8 <= len(phone) <= 15:
-        await update.effective_message.reply_text(
-            "استفاده: /wa_pair 93700123456\nشماره را با کد کشور و بدون + وارد کن."
-        )
+    if len(context.args) == 1:
+        account_id, raw_phone = "main", context.args[0]
+    elif len(context.args) >= 2:
+        account_id, raw_phone = context.args[0], context.args[1]
+    else:
+        await update.effective_message.reply_text("استفاده: /wa_pair <شناسه_حساب> <شماره>\nمثال: /wa_pair work 93700123456")
+        return
+    phone = re.sub(r"\D", "", raw_phone)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", account_id) or not 8 <= len(phone) <= 15:
+        await update.effective_message.reply_text("شناسه حساب یا شماره معتبر نیست.")
         return
     try:
-        result = await whatsapp_request("POST", "/pairing-code", {"phone": phone})
+        result = await whatsapp_request("POST", "/pairing-code", {"accountId": account_id, "phone": phone})
         code = result.get("code")
         if code:
             await update.effective_message.reply_text(
-                f"کد پیوند واتساپ: {code}\n\n"
-                "در واتساپ گوشی: Settings → Linked devices → Link a device → "
-                "Link with phone number، سپس کد را وارد کن. این کد را با کسی شریک نکن."
+                f"شناسه حساب: {account_id}\nکد پیوند: {code}\n\n"
+                "در واتساپ: Settings → Linked devices → Link a device → Link with phone number. کد را با کسی شریک نکن."
             )
         else:
             await update.effective_message.reply_text(result.get("message", "کد دریافت نشد."))
     except Exception as exc:
         log.warning("WhatsApp pairing request failed: %s", exc)
-        await update.effective_message.reply_text(
-            "دریافت کد ناموفق بود. سرویس WhatsApp را در Railway بررسی کن و /wa_status را امتحان کن."
-        )
+        await update.effective_message.reply_text("دریافت کد ناموفق بود؛ سرویس واتساپ را بررسی کن.")
+
+
+async def wa_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    try:
+        result = await whatsapp_request("GET", "/accounts")
+        rows = result.get("accounts", [])
+        if not rows:
+            await update.effective_message.reply_text("هنوز حسابی ثبت نشده. از /wa_pair <شناسه> <شماره> استفاده کن.")
+            return
+        lines = ["حساب‌های ثبت‌شده (فقط ادمین می‌بیند):"]
+        for row in rows:
+            lines.append(f"• {row.get('id')}: {'متصل' if row.get('connected') else row.get('status', 'نامشخص')}")
+        await update.effective_message.reply_text("\n".join(lines))
+    except Exception:
+        await update.effective_message.reply_text("فهرست حساب‌ها در دسترس نیست؛ سرویس واتساپ را بررسی کن.")
 
 
 async def wa_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -396,29 +497,20 @@ async def wa_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update):
         await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
         return
-    if len(context.args) < 2:
-        await update.effective_message.reply_text(
-            "استفاده: /wa_send 93700123456 سلام، حالت چطور است؟\n"
-            "فقط به مخاطبانی پیام بده که اجازهٔ دریافت پیام داده‌اند."
-        )
+    if len(context.args) < 3:
+        await update.effective_message.reply_text("استفاده: /wa_send <شناسه_حساب> <شماره> <متن پیام>")
         return
-    phone = re.sub(r"\D", "", context.args[0])
-    message = " ".join(context.args[1:]).strip()
-    if not 8 <= len(phone) <= 15 or not message or len(message) > 4000:
-        await update.effective_message.reply_text("شماره یا متن پیام معتبر نیست.")
+    account_id = context.args[0]
+    phone = re.sub(r"\D", "", context.args[1])
+    message = " ".join(context.args[2:]).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", account_id) or not 8 <= len(phone) <= 15 or not message or len(message) > 4000:
+        await update.effective_message.reply_text("شناسه حساب، شماره یا متن پیام معتبر نیست.")
         return
     try:
-        result = await whatsapp_request(
-            "POST", "/send", {"phone": phone, "message": message}
-        )
-        await update.effective_message.reply_text(
-            "پیام برای ارسال به WhatsApp تحویل شد." if result.get("ok")
-            else result.get("message", "ارسال انجام نشد.")
-        )
+        result = await whatsapp_request("POST", "/send", {"accountId": account_id, "phone": phone, "message": message})
+        await update.effective_message.reply_text("درخواست ارسال تحویل شد." if result.get("ok") else "ارسال انجام نشد.")
     except Exception:
-        await update.effective_message.reply_text(
-            "ارسال ناموفق بود؛ ابتدا /wa_status را بررسی کن."
-        )
+        await update.effective_message.reply_text("ارسال ناموفق بود؛ ابتدا /wa_accounts را بررسی کن.")
 
 
 async def wa_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -427,9 +519,10 @@ async def wa_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.effective_message.reply_text(
         "دستورهای WhatsApp (فقط ادمین):\n"
-        "/wa_pair 93700123456 — دریافت کد پیوند\n"
-        "/wa_status — وضعیت اتصال\n"
-        "/wa_send 93700123456 متن پیام — ارسال پیام\n\n"
+        "/wa_pair <شناسه> <شماره> — افزودن حساب؛ مثال /wa_pair work 93700123456\n"
+        "/wa_accounts — فهرست حساب‌ها (فقط ادمین)\n"
+        "/wa_status — وضعیت اتصال حساب اصلی\n"
+        "/wa_send <شناسه> <شماره> <متن> — ارسال آزمایشی توسط ادمین\n\n"
         "پیام‌های دریافتی مستقیم به چت ادمین فرستاده می‌شوند. "
         "کد پیوند و اطلاعات نشست را با کسی شریک نکن."
     )
@@ -458,6 +551,7 @@ def main() -> None:
     app.add_handler(CommandHandler("wa_policy", wa_policy))
     app.add_handler(CommandHandler("wa", wa_help))
     app.add_handler(CommandHandler("wa_pair", wa_pair))
+    app.add_handler(CommandHandler("wa_accounts", wa_accounts))
     app.add_handler(CommandHandler("wa_status", wa_status))
     app.add_handler(CommandHandler("wa_send", wa_send))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
