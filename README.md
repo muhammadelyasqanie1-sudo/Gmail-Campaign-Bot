@@ -6,15 +6,15 @@ A Telegram bot starter for admin-managed campaign settings, with an optional sep
 
 - The Telegram bot stores admin configuration in SQLite.
 - Gmail sending is **not implemented**.
-- The optional WhatsApp service uses the community-maintained, unofficial Baileys library. It can request a WhatsApp Web pairing code, send direct text messages, and forward incoming direct text messages to the Telegram admin.
+- The optional WhatsApp service uses the community-maintained, unofficial Baileys library. It now has isolated session folders and API support for multiple admin-owned accounts, pairing codes, direct text sending, and forwarding incoming direct text messages to the Telegram admin. This change has not yet been verified by a successful Railway deployment.
 - WhatsApp linking is not an official WhatsApp Business API integration. Account restrictions are possible. Do not use it for unsolicited or bulk messages.
 
 ## Telegram bot features
 
 - Public `/start` and phone-number registration
 - Admin-only configuration commands: `/admin`, `/setsubject`, `/settemplate`, `/addrecipient`, `/delrecipient`, `/recipients`, `/setinterval`, `/setduration`, `/settings`
-- WhatsApp admin commands: `/wa`, `/wa_pair 93700123456`, `/wa_status`, `/wa_send 93700123456 Hello`
-- WhatsApp pairing codes and messages are handled only by the admin commands; incoming direct text messages are forwarded to the admin's Telegram chat. Group messages are ignored.
+- WhatsApp admin commands: `/wa`, `/wa_pair work 93700123456`, `/wa_accounts`, `/wa_status`, `/wa_send work 93700123456 Hello`, `/wa_allow_user 123456789 work`, `/wa_deny_user 123456789 work`
+- WhatsApp pairing and account listing are admin-only. Public users see only the send-message button; they enter a recipient number, preview the configured template, and must confirm before sending. The bot selects only connected accounts assigned to that Telegram user by the admin. Incoming direct text messages are forwarded to the admin's Telegram chat. Group messages are ignored.
 
 ## Deploy the Telegram bot
 
@@ -48,16 +48,21 @@ This is a monorepo: deploy a second Railway service from the same GitHub reposit
 In the Telegram bot, as the admin:
 
 - `/wa` — show WhatsApp commands
-- `/wa_pair 93700123456` — request a pairing code. Enter the country code and digits only, without `+`, spaces, or dashes. In WhatsApp, open Settings → Linked devices → Link a device → Link with phone number, then enter the code if that option is available.
-- `/wa_status` — check whether the session is connected
-- `/wa_send 93700123456 Hello` — send a direct text message to a number that has agreed to receive it.
+- `/wa_pair work 93700123456` — create a session named `work` and request a pairing code. Use a different ID for each account (letters, digits, `_`, or `-`). Enter the country code and digits only, without `+`, spaces, or dashes. In WhatsApp, open Settings → Linked devices → Link a device → Link with phone number, then enter the code.
+- `/wa_accounts` — list account IDs and connection status (admin only)
+- `/wa_status` — show statuses for all accounts, or `/wa_status work` for one account
+- `/wa_allow_user 123456789 work` — allow a Telegram user ID to use the `work` account
+- `/wa_deny_user 123456789 work` — remove that permission
+- `/wa_send work 93700123456 Hello` — admin-only test send to a recipient who has agreed to receive the message.
+
+Public users only see the send button, enter a recipient number, preview the admin-configured message, and confirm. The service round-robins among connected accounts assigned to that user. Users do not see the account IDs or connection list.
 
 Incoming direct text messages are forwarded to the Telegram admin. Group messages are ignored. The service does not intentionally log message bodies or pairing codes.
 
 ## Security and reliability
 
 - Never put real secrets, pairing codes, or WhatsApp session files in GitHub.
-- Only the admin Telegram ID can request pairing codes or send messages through bot commands.
+- Only the admin Telegram ID can request pairing codes, inspect account status, grant/revoke account permissions, or use admin send commands. Public users cannot list connected accounts and can only use accounts explicitly assigned to their Telegram ID.
 - Use messages only with recipients who expect them; honor requests to stop.
 - Baileys is unofficial and can break when WhatsApp changes. Linking may result in account restrictions. Use the official WhatsApp Business Platform for business-critical messaging.
 - The WhatsApp service requires Node.js 20 or later. It pins Baileys 6.7.18 to avoid the breaking API changes introduced in Baileys 7.
@@ -72,4 +77,4 @@ The Telegram admin can now configure these stored settings:
 - `/wa_user_limit <number>` — save a per-user daily request limit from 1 to 20.
 - `/wa_policy` — inspect the saved policy.
 
-These commands store configuration in SQLite. They are an initial admin configuration layer; they do not yet implement multi-account sessions, public-user sending, per-user quota enforcement, or an interactive approval flow. The current Baileys service supports only one linked WhatsApp session. Do not treat the feature flag as an enforcement boundary until the public-user workflow and backend checks are implemented. Repeated automated block/unblock actions and bulk reporting are not provided. Only send messages to recipients who have agreed to receive them.
+These commands store configuration in SQLite. The latest repository revision adds the initial public send flow, daily quota tracking, multi-account API support, and per-user account permissions. These changes still require syntax checks and a successful Railway deployment before they should be considered working. Repeated automated block/unblock actions and bulk reporting are not provided. Only send messages to recipients who have agreed to receive them.
