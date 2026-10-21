@@ -13,7 +13,7 @@ A Telegram bot starter for admin-managed campaign settings, with an optional sep
 
 - Public `/start` and phone-number registration
 - Admin-only configuration commands: `/admin`, `/setsubject`, `/settemplate`, `/addrecipient`, `/delrecipient`, `/recipients`, `/setinterval`, `/setduration`, `/settings`
-- WhatsApp admin commands: `/wa`, `/wa_pair work 93700123456`, `/wa_accounts`, `/wa_status`, `/wa_remove_account work`, `/wa_send work 93700123456 Hello`, `/wa_allow_user 123456789 work`, `/wa_deny_user 123456789 work`, `/wa_users`, `/wa_history`
+- WhatsApp admin commands: `/wa`, `/wa_pair work 93700123456`, `/wa_accounts`, `/wa_status`, `/wa_remove_account work`, `/wa_block work 93700123456`, `/wa_unblock work 93700123456`, `/wa_send work 93700123456 Hello`, `/wa_allow_user 123456789 work`, `/wa_deny_user 123456789 work`, `/wa_users`, `/wa_history`
 - `/cancel` — cancel the current user send flow before confirming.
 - WhatsApp pairing and account listing are admin-only. Public users see only the send-message button; they enter a recipient number, preview the configured template, and must confirm before sending. The bot selects only connected accounts assigned to that Telegram user by the admin. Incoming direct text messages are forwarded to the admin's Telegram chat. Group messages are ignored.
 
@@ -54,6 +54,7 @@ In the Telegram bot, as the admin:
 - `/wa_accounts` — list account IDs and connection status (admin only)
 - `/wa_status` — show statuses for all accounts, or `/wa_status work` for one account
 - `/wa_remove_account work` — log out and remove a session, then revoke all permissions for that account
+- `/wa_block work 93700123456` and `/wa_unblock work 93700123456` — one-time admin-only block/unblock of a contact on one of your linked accounts. No repeated automated cycle is provided.
 - `/wa_users` — show registered Telegram users and the number of assigned accounts
 - `/wa_history` — show the last 20 audit events without storing recipient phone numbers
 - `/wa_allow_user 123456789 work` — allow a Telegram user ID to use the `work` account
@@ -82,4 +83,4 @@ The Telegram admin can now configure these stored settings:
 - `/wa_user_limit <number>` — save a per-user daily request limit from 1 to 20.
 - `/wa_policy` — inspect the saved policy.
 
-The current repository revision includes the public send flow, atomic daily quota reservation, multi-account API support, per-user account permissions, account removal, audit history, a per-recipient cooldown, and an explicit root `Procfile` start command for the Telegram bot. These changes still require syntax checks and a successful Railway deployment before they should be considered working. Repeated automated block/unblock actions and bulk reporting are not provided. Only send messages to recipients who have agreed to receive them.
+The current repository revision includes the public send flow, atomic daily quota reservation, multi-account API support, per-user account permissions, account removal, audit history, a per-recipient cooldown, and an explicit root `Procfile` start command for the Telegram bot. These changes still require syntax checks and a successful Railway deployment before they should be considered working. Only one-off, admin-initiated contact block/unblock commands are supported. Repeated automated block/unblock cycles and automated account-reporting are not provided; use WhatsApp's official app to report a specific account when appropriate. Only send messages to recipients who have agreed to receive them.
