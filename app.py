@@ -307,6 +307,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "/wa_allow_user <شناسه_تلگرام> <شناسه_حساب> — اجازهٔ استفاده از حساب برای کاربر\n"
         "/wa_deny_user <شناسه_تلگرام> <شناسه_حساب> — لغو اجازهٔ حساب\n"
         "/wa_accounts — فهرست حساب‌ها (فقط ادمین)\n"
+        "/wa_remove_account <شناسه> — حذف نشست حساب و دسترسی‌های آن\n"
         "/wa_users — کاربران و تعداد حساب‌های مجاز\n"
         "/wa_history — ۲۰ رویداد اخیر\n"
         "/wa_policy — مشاهدهٔ سیاست فعلی واتساپ\n\n"
@@ -598,6 +599,31 @@ async def wa_pair(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text("دریافت کد ناموفق بود؛ سرویس واتساپ را بررسی کن.")
 
 
+async def wa_remove_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    if len(context.args) != 1 or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", context.args[0]):
+        await update.effective_message.reply_text("استفاده: /wa_remove_account <شناسه_حساب>")
+        return
+    account_id = context.args[0]
+    try:
+        result = await whatsapp_request("DELETE", f"/accounts/{account_id}")
+        if result.get("removed"):
+            with closing(connect_db()) as conn:
+                conn.execute("DELETE FROM wa_permissions WHERE account_id=?", (account_id,))
+                conn.commit()
+            audit_event(update.effective_user.id, "remove_account", "removed", account_id)
+            await update.effective_message.reply_text(
+                f"حساب {account_id} حذف شد و دسترسی‌های اختصاص‌یافته به آن نیز لغو شدند."
+            )
+        else:
+            await update.effective_message.reply_text("حساب حذف نشد.")
+    except Exception as exc:
+        log.warning("WhatsApp account removal failed: %s", exc)
+        await update.effective_message.reply_text("حذف حساب ناموفق بود؛ سرویس واتساپ را بررسی کن.")
+
+
 async def wa_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update):
         await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
@@ -704,6 +730,7 @@ def main() -> None:
     app.add_handler(CommandHandler("wa", wa_help))
     app.add_handler(CommandHandler("wa_pair", wa_pair))
     app.add_handler(CommandHandler("wa_accounts", wa_accounts))
+    app.add_handler(CommandHandler("wa_remove_account", wa_remove_account))
     app.add_handler(CommandHandler("wa_status", wa_status))
     app.add_handler(CommandHandler("wa_send", wa_send))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
