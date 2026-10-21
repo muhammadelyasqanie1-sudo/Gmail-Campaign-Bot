@@ -13,7 +13,7 @@ A Telegram bot starter for admin-managed campaign settings, with an optional sep
 
 - Public `/start` and phone-number registration
 - Admin-only configuration commands: `/admin`, `/setsubject`, `/settemplate`, `/addrecipient`, `/delrecipient`, `/recipients`, `/setinterval`, `/setduration`, `/settings`
-- WhatsApp admin commands: `/wa`, `/wa_pair work 93700123456`, `/wa_accounts`, `/wa_status`, `/wa_send work 93700123456 Hello`, `/wa_allow_user 123456789 work`, `/wa_deny_user 123456789 work`
+- WhatsApp admin commands: `/wa`, `/wa_pair work 93700123456`, `/wa_accounts`, `/wa_status`, `/wa_remove_account work`, `/wa_send work 93700123456 Hello`, `/wa_allow_user 123456789 work`, `/wa_deny_user 123456789 work`, `/wa_users`, `/wa_history`
 - WhatsApp pairing and account listing are admin-only. Public users see only the send-message button; they enter a recipient number, preview the configured template, and must confirm before sending. The bot selects only connected accounts assigned to that Telegram user by the admin. Incoming direct text messages are forwarded to the admin's Telegram chat. Group messages are ignored.
 
 ## Deploy the Telegram bot
@@ -34,6 +34,7 @@ This is a monorepo: deploy a second Railway service from the same GitHub reposit
    - `ADMIN_ID`: the numeric Telegram user ID of the admin.
    - `WHATSAPP_SERVICE_TOKEN`: a long random secret. Use the exact same value in both Railway services. Do not post it in chats or commit it to GitHub.
    - `AUTH_DIR=/data/auth_info`
+   - Optional `RECIPIENT_COOLDOWN_MS=60000` and `ACCOUNT_SEND_GAP_MS=2000`; the service clamps these to minimum safe values.
    - `PORT`: Railway normally provides this automatically; otherwise use `3000`.
 4. Attach a Railway persistent volume to the WhatsApp service and set its mount path to `/data`. This is required to preserve the WhatsApp session across restarts and deployments.
 5. Deploy. Confirm the service logs show it is listening and the `/health` route responds. Do not expose or share the contents of `/data/auth_info`.
@@ -51,11 +52,14 @@ In the Telegram bot, as the admin:
 - `/wa_pair work 93700123456` — create a session named `work` and request a pairing code. Use a different ID for each account (letters, digits, `_`, or `-`). Enter the country code and digits only, without `+`, spaces, or dashes. In WhatsApp, open Settings → Linked devices → Link a device → Link with phone number, then enter the code.
 - `/wa_accounts` — list account IDs and connection status (admin only)
 - `/wa_status` — show statuses for all accounts, or `/wa_status work` for one account
+- `/wa_remove_account work` — log out and remove a session, then revoke all permissions for that account
+- `/wa_users` — show registered Telegram users and the number of assigned accounts
+- `/wa_history` — show the last 20 audit events without storing recipient phone numbers
 - `/wa_allow_user 123456789 work` — allow a Telegram user ID to use the `work` account
 - `/wa_deny_user 123456789 work` — remove that permission
 - `/wa_send work 93700123456 Hello` — admin-only test send to a recipient who has agreed to receive the message.
 
-Public users only see the send button, enter a recipient number, preview the admin-configured message, and confirm. The service round-robins among connected accounts assigned to that user. Users do not see the account IDs or connection list.
+Public users only see the send button, enter a recipient number, preview the admin-configured message, and confirm. The service round-robins among connected accounts assigned to that user. Users do not see the account IDs or connection list. The service enforces a minimum 60-second cooldown for the same recipient on the same account and a minimum two-second gap between sends from an account. These defaults are service-level guardrails, not a bulk-messaging scheduler.
 
 Incoming direct text messages are forwarded to the Telegram admin. Group messages are ignored. The service does not intentionally log message bodies or pairing codes.
 
@@ -77,4 +81,4 @@ The Telegram admin can now configure these stored settings:
 - `/wa_user_limit <number>` — save a per-user daily request limit from 1 to 20.
 - `/wa_policy` — inspect the saved policy.
 
-These commands store configuration in SQLite. The latest repository revision adds the initial public send flow, daily quota tracking, multi-account API support, and per-user account permissions. These changes still require syntax checks and a successful Railway deployment before they should be considered working. Repeated automated block/unblock actions and bulk reporting are not provided. Only send messages to recipients who have agreed to receive them.
+The current repository revision includes the public send flow, atomic daily quota reservation, multi-account API support, per-user account permissions, account removal, audit history, a per-recipient cooldown, and an explicit root `Procfile` start command for the Telegram bot. These changes still require syntax checks and a successful Railway deployment before they should be considered working. Repeated automated block/unblock actions and bulk reporting are not provided. Only send messages to recipients who have agreed to receive them.
