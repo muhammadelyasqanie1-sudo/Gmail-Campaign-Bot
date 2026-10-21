@@ -22,6 +22,7 @@ if (!TELEGRAM_TOKEN || !/^\d+$/.test(ADMIN_ID)) {
 let sock;
 let connected = false;
 let connecting = false;
+let accountRegistered = false;
 let lastStatus = 'starting';
 
 function safeTokenMatch(candidate) {
@@ -46,6 +47,7 @@ async function connectWhatsApp() {
     fs.mkdirSync(path.dirname(AUTH_DIR), { recursive: true });
     fs.mkdirSync(AUTH_DIR, { recursive: true });
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    accountRegistered = Boolean(state.creds.registered);
     sock = makeWASocket({
       auth: state,
       logger: pino({ level: 'silent' }),
@@ -54,7 +56,7 @@ async function connectWhatsApp() {
       syncFullHistory: false,
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', async () => { accountRegistered = Boolean(state.creds.registered); await saveCreds(); });
     sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
       connected = connection === 'open';
       if (connection === 'open') {
@@ -128,7 +130,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { ok: false, message: 'Use a phone number with country code, digits only.' });
       }
       if (!sock) await connectWhatsApp();
-      if (sock?.authState?.creds?.registered) {
+      if (accountRegistered) {
         return sendJson(res, 409, { ok: false, message: 'A WhatsApp account is already linked to this session.' });
       }
       const code = await sock.requestPairingCode(phone);
