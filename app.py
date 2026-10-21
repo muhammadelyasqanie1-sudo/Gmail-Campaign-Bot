@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import sqlite3
+import httpx
 from contextlib import closing
 from pathlib import Path
 
@@ -27,6 +28,8 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 PHONE_RE = re.compile(r"^\+[1-9]\d{7,14}$")
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+WHATSAPP_SERVICE_URL = os.getenv("WHATSAPP_SERVICE_URL", "").strip().rstrip("/")
+WHATSAPP_SERVICE_TOKEN = os.getenv("WHATSAPP_SERVICE_TOKEN", "").strip()
 DEFAULT_TEMPLATE = "سلام، امیدوارم حالتان خوب باشد.\nشماره تماس: {{user_phone}}"
 
 
@@ -266,6 +269,106 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def whatsapp_request(method: str, path: str, payload: dict | None = None) -> dict:
+    if not WHATSAPP_SERVICE_URL or not WHATSAPP_SERVICE_TOKEN:
+        raise RuntimeError("WhatsApp service is not configured in Railway Variables.")
+    async with httpx.AsyncClient(timeout=25) as client:
+        response = await client.request(
+            method,
+            f"{WHATSAPP_SERVICE_URL}{path}",
+            json=payload,
+            headers={"Authorization": f"Bearer {WHATSAPP_SERVICE_TOKEN}"},
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def wa_pair(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    phone = re.sub(r"\D", "", context.args[0] if context.args else "")
+    if not 8 <= len(phone) <= 15:
+        await update.effective_message.reply_text(
+            "استفاده: /wa_pair 93700123456\nشماره را با کد کشور و بدون + وارد کن."
+        )
+        return
+    try:
+        result = await whatsapp_request("POST", "/pairing-code", {"phone": phone})
+        code = result.get("code")
+        if code:
+            await update.effective_message.reply_text(
+                f"کد پیوند واتساپ: {code}\n\n"
+                "در واتساپ گوشی: Settings → Linked devices → Link a device → "
+                "Link with phone number، سپس کد را وارد کن. این کد را با کسی شریک نکن."
+            )
+        else:
+            await update.effective_message.reply_text(result.get("message", "کد دریافت نشد."))
+    except Exception as exc:
+        log.warning("WhatsApp pairing request failed: %s", exc)
+        await update.effective_message.reply_text(
+            "دریافت کد ناموفق بود. سرویس WhatsApp را در Railway بررسی کن و /wa_status را امتحان کن."
+        )
+
+
+async def wa_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    try:
+        result = await whatsapp_request("GET", "/status")
+        await update.effective_message.reply_text(
+            "وضعیت WhatsApp: " + ("متصل ✅" if result.get("connected") else "متصل نیست ❌")
+        )
+    except Exception:
+        await update.effective_message.reply_text(
+            "به سرویس WhatsApp دسترسی نیست. متغیرهای Railway را بررسی کن."
+        )
+
+
+async def wa_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    if len(context.args) < 2:
+        await update.effective_message.reply_text(
+            "استفاده: /wa_send 93700123456 سلام، حالت چطور است؟\n"
+            "فقط به مخاطبانی پیام بده که اجازهٔ دریافت پیام داده‌اند."
+        )
+        return
+    phone = re.sub(r"\D", "", context.args[0])
+    message = " ".join(context.args[1:]).strip()
+    if not 8 <= len(phone) <= 15 or not message or len(message) > 4000:
+        await update.effective_message.reply_text("شماره یا متن پیام معتبر نیست.")
+        return
+    try:
+        result = await whatsapp_request(
+            "POST", "/send", {"phone": phone, "message": message}
+        )
+        await update.effective_message.reply_text(
+            "پیام برای ارسال به WhatsApp تحویل شد." if result.get("ok")
+            else result.get("message", "ارسال انجام نشد.")
+        )
+    except Exception:
+        await update.effective_message.reply_text(
+            "ارسال ناموفق بود؛ ابتدا /wa_status را بررسی کن."
+        )
+
+
+async def wa_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        await update.effective_message.reply_text("این دستور فقط برای ادمین است.")
+        return
+    await update.effective_message.reply_text(
+        "دستورهای WhatsApp (فقط ادمین):\n"
+        "/wa_pair 93700123456 — دریافت کد پیوند\n"
+        "/wa_status — وضعیت اتصال\n"
+        "/wa_send 93700123456 متن پیام — ارسال پیام\n\n"
+        "پیام‌های دریافتی مستقیم به چت ادمین فرستاده می‌شوند. "
+        "کد پیوند و اطلاعات نشست را با کسی شریک نکن."
+    )
+
+
 def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is missing. Set it in Railway Variables or .env.")
@@ -283,6 +386,10 @@ def main() -> None:
     app.add_handler(CommandHandler("setinterval", set_interval))
     app.add_handler(CommandHandler("setduration", set_duration))
     app.add_handler(CommandHandler("settings", settings))
+    app.add_handler(CommandHandler("wa", wa_help))
+    app.add_handler(CommandHandler("wa_pair", wa_pair))
+    app.add_handler(CommandHandler("wa_status", wa_status))
+    app.add_handler(CommandHandler("wa_send", wa_send))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     log.info("Gmail Campaign Bot starter is starting")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
