@@ -33,6 +33,12 @@ WHATSAPP_SERVICE_TOKEN = os.getenv("WHATSAPP_SERVICE_TOKEN", "").strip()
 DEFAULT_TEMPLATE = "سلام، امیدوارم حالتان خوب باشد.\nشماره تماس: {{user_phone}}"
 
 
+def command_payload(update: Update) -> str:
+    raw = update.effective_message.text or ""
+    parts = raw.split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
 def is_admin(update: Update) -> bool:
     return bool(update.effective_user and ADMIN_ID_RAW.isdigit()
                 and update.effective_user.id == int(ADMIN_ID_RAW))
@@ -148,6 +154,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard = ReplyKeyboardMarkup([[KeyboardButton("📨 ارسال پیام")]], resize_keyboard=True)
         greeting = "سلام! خوش آمدید. برای شروع فقط روی «ارسال پیام» بزنید."
     await update.message.reply_text(greeting, reply_markup=keyboard)
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop("wa_step", None)
+    context.user_data.pop("wa_phone", None)
+    context.user_data.pop("wa_message", None)
+    if update.effective_message:
+        await update.effective_message.reply_text("درخواست فعلی لغو شد.")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -717,7 +731,7 @@ def main() -> None:
         raise RuntimeError("ADMIN_ID must be your numeric Telegram user ID.")
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("start", start))\n    app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("admin", admin_help))
     app.add_handler(CommandHandler("setsubject", set_subject))
     app.add_handler(CommandHandler("settemplate", set_template))
